@@ -1,0 +1,1470 @@
+openapi: 3.1.0
+info:
+  title: Family Tree Builder API
+  version: 3.0.0
+  description: |
+    RESTful API for managing family trees — members, parent/child links,
+    spouse relationships, eligibility queries, and full import/export.
+
+    **Dual-parent model**
+
+    Each member stores up to **two** parent references:
+    - `parent1Id` — primary parent (required when any parent is set)
+    - `parent2Id` — secondary parent (optional; only valid when `parent1Id` is set)
+
+    **Single-row spouse relations**
+
+    Each couple is stored as **one row** with `spouse1Id` (lexicographically smaller UUID)
+    and `spouse2Id`. The relation `id` is returned in every spouse payload and must be
+    used when calling the divorce or remove-spouse endpoints.
+
+    **Response envelope** — every endpoint returns:
+    ```json
+    { "success": true,  "data": <payload> }
+    { "success": false, "error": "<message>" }
+    ```
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+
+tags:
+  - name: members
+    description: Create, read, update, and delete family members
+  - name: member-relations
+    description: Per-member relationship queries (spouses, parents, children)
+  - name: relationships
+    description: Link/unlink parent-child and spouse relationships
+  - name: tree
+    description: Tree-wide root member settings
+  - name: eligibility
+    description: Query which members are eligible for a given relationship
+  - name: data
+    description: Bulk import, export, and clear operations
+
+# ---------------------------------------------------------------------------
+# Reusable components
+# ---------------------------------------------------------------------------
+components:
+  schemas:
+
+    # ---- Primitives ----
+
+    Gender:
+      type: string
+      enum: [male, female, other]
+      example: male
+
+    SpouseStatus:
+      type: string
+      enum: [current, divorced]
+      example: current
+
+    # ---- Core domain objects ----
+
+    SpouseRelation:
+      type: object
+      required: [id, spouseId, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Relation row ID — use this when calling divorce or remove-spouse.
+          example: "c3d4e5f6-0000-0000-0000-000000000099"
+        spouseId:
+          type: string
+          format: uuid
+          example: "b2e3f4a5-1234-5678-abcd-ef0123456789"
+        status:
+          $ref: '#/components/schemas/SpouseStatus'
+
+    FamilyMember:
+      type: object
+      required: [id, firstName, lastName, gender, spouses]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+        firstName:
+          type: string
+          example: Robert
+        lastName:
+          type: string
+          example: Smith
+        gender:
+          $ref: '#/components/schemas/Gender'
+        birthDate:
+          type: string
+          format: date
+          nullable: true
+          example: "1935-03-12"
+        deathDate:
+          type: string
+          format: date
+          nullable: true
+          example: "1995-11-04"
+        parent1Id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Primary parent. Required when any parent is set.
+          example: "a1b2c3d4-0000-0000-0000-000000000010"
+        parent2Id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Secondary parent. Only valid when parent1Id is also set.
+          example: "a1b2c3d4-0000-0000-0000-000000000011"
+        notes:
+          type: string
+          nullable: true
+          example: "Family patriarch"
+        spouses:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpouseRelation'
+
+    # ---- Request bodies ----
+
+    MemberBody:
+      type: object
+      required: [firstName, lastName, gender]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          example: Robert
+        lastName:
+          type: string
+          minLength: 1
+          example: Smith
+        gender:
+          $ref: '#/components/schemas/Gender'
+        birthDate:
+          type: string
+          format: date
+          nullable: true
+          example: "1935-03-12"
+        deathDate:
+          type: string
+          format: date
+          nullable: true
+          example: "1995-11-04"
+        notes:
+          type: string
+          nullable: true
+          example: "Family patriarch"
+
+    LinkChildBody:
+      type: object
+      required: [parentId, childId]
+      description: |
+        Link a child to a parent. The caller supplies their own ID as `parentId`.
+        An optional `parent2Id` assigns a second parent to the child in the same
+        request — only allowed when the child currently has **zero** parents.
+        To add a second parent to a child who already has one, make a second
+        call without `parent2Id`.
+      properties:
+        parentId:
+          type: string
+          format: uuid
+          description: The member acting as parent (fills the primary parent slot).
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+        childId:
+          type: string
+          format: uuid
+          description: The member to be linked as a child.
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+        parent2Id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Optional second parent. May only be supplied when the child currently
+            has zero parents. Must differ from parentId and childId.
+          example: "a1b2c3d4-0000-0000-0000-000000000002"
+
+    LinkSpouseBody:
+      type: object
+      required: [memberId, spouseId]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+        spouseId:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-0000-0000-0000-000000000002"
+
+    RelationIdBody:
+      type: object
+      required: [relationId]
+      description: Identifies a spouse relation by its row ID.
+      properties:
+        relationId:
+          type: string
+          format: uuid
+          description: The `id` of the spouse_relations row (returned by link-spouse and member spouses endpoints).
+          example: "c3d4e5f6-0000-0000-0000-000000000099"
+
+    SetRootBody:
+      type: object
+      required: [rootMemberId]
+      properties:
+        rootMemberId:
+          type: string
+          format: uuid
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+
+    ImportBody:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/FamilyMember'
+        rootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+
+    # ---- Response envelopes ----
+
+    SuccessEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          description: Payload — shape varies per endpoint (see individual responses)
+
+    ErrorEnvelope:
+      type: object
+      required: [success, error]
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Member not found"
+
+    # ---- Specific data payloads ----
+
+    MembersListData:
+      type: object
+      required: [members, rootMemberId]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/FamilyMember'
+        rootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+
+    DeleteMemberData:
+      type: object
+      required: [deletedId, newRootMemberId]
+      properties:
+        deletedId:
+          type: string
+          format: uuid
+        newRootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+
+    MemberSpousesData:
+      type: object
+      required: [memberId, spouses]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+        spouses:
+          type: array
+          items:
+            type: object
+            required: [relationId, spouseId, status]
+            properties:
+              relationId:
+                type: string
+                format: uuid
+                description: Use this ID for divorce and remove-spouse operations.
+              spouseId:
+                type: string
+                format: uuid
+              status:
+                $ref: '#/components/schemas/SpouseStatus'
+
+    MemberParentsData:
+      type: object
+      required: [memberId, parents]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+        parents:
+          type: array
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/FamilyMember'
+
+    MemberChildrenData:
+      type: object
+      required: [memberId, children]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/FamilyMember'
+
+    LinkChildData:
+      type: object
+      required: [childId, parentId, newRootMemberId]
+      properties:
+        childId:
+          type: string
+          format: uuid
+        parentId:
+          type: string
+          format: uuid
+        parent2Id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Present only when parent2Id was supplied in the request.
+        newRootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+
+    LinkSpouseData:
+      type: object
+      required: [id, memberId, spouseId, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The new relation row ID. Store this to use with divorce / remove.
+        memberId:
+          type: string
+          format: uuid
+        spouseId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/SpouseStatus'
+
+    UnlinkParentData:
+      type: object
+      required: [childId, previousParent1Id, previousParent2Id]
+      properties:
+        childId:
+          type: string
+          format: uuid
+        previousParent1Id:
+          type: string
+          format: uuid
+          nullable: true
+        previousParent2Id:
+          type: string
+          format: uuid
+          nullable: true
+
+    RemoveSpouseData:
+      type: object
+      required: [relationId, spouse1Id, spouse2Id, removed]
+      properties:
+        relationId:
+          type: string
+          format: uuid
+        spouse1Id:
+          type: string
+          format: uuid
+        spouse2Id:
+          type: string
+          format: uuid
+        removed:
+          type: boolean
+          example: true
+
+    DivorceData:
+      type: object
+      required: [relationId, spouse1Id, spouse2Id, status]
+      properties:
+        relationId:
+          type: string
+          format: uuid
+        spouse1Id:
+          type: string
+          format: uuid
+        spouse2Id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [divorced]
+          example: divorced
+
+    ReconcileData:
+      type: object
+      required: [relationId, spouse1Id, spouse2Id, status]
+      properties:
+        relationId:
+          type: string
+          format: uuid
+        spouse1Id:
+          type: string
+          format: uuid
+        spouse2Id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [current]
+          example: current
+
+    RootData:
+      type: object
+      required: [rootMemberId]
+      properties:
+        rootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+
+    EligibleMembersData:
+      type: object
+      required: [eligible]
+      properties:
+        eligible:
+          type: array
+          items:
+            $ref: '#/components/schemas/FamilyMember'
+
+    ImportData:
+      type: object
+      required: [imported]
+      properties:
+        imported:
+          type: integer
+          example: 9
+
+    ClearData:
+      type: object
+      required: [cleared]
+      properties:
+        cleared:
+          type: boolean
+          example: true
+
+  # ---- Reusable responses ----
+  responses:
+    400:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error: "Child already has two parents. Unlink a parent first."
+
+    404:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error: "Member not found"
+
+    500:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error: "Unexpected database error"
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ==========================================================================
+  # Members CRUD
+  # ==========================================================================
+
+  /api/members:
+    get:
+      tags: [members]
+      summary: List all members
+      description: |
+        Returns every family member together with their spouse relations and
+        the current root member ID. Each member includes `parent1Id`,
+        `parent2Id`, and a `spouses` array where every entry carries the
+        relation `id` needed for divorce / remove operations.
+      operationId: listMembers
+      responses:
+        '200':
+          description: Full member list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MembersListData'
+              example:
+                success: true
+                data:
+                  rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  members:
+                    - id: "a1b2c3d4-0000-0000-0000-000000000001"
+                      firstName: Robert
+                      lastName: Smith
+                      gender: male
+                      birthDate: "1935-03-12"
+                      deathDate: "1995-11-04"
+                      parent1Id: null
+                      parent2Id: null
+                      notes: "Family patriarch"
+                      spouses:
+                        - id: "c3d4e5f6-0000-0000-0000-000000000099"
+                          spouseId: "a1b2c3d4-0000-0000-0000-000000000002"
+                          status: current
+        '500':
+          $ref: '#/components/responses/500'
+
+    post:
+      tags: [members]
+      summary: Create a new member
+      description: |
+        Creates an orphaned member (`parent1Id=null`, `parent2Id=null`, no spouses).
+        If this is the very first member in the tree it is automatically set as
+        the root member.
+      operationId: createMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberBody'
+            example:
+              firstName: Alice
+              lastName: Smith
+              gender: female
+              birthDate: "1990-06-15"
+              deathDate: null
+              notes: null
+      responses:
+        '201':
+          description: Created member
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FamilyMember'
+        '400':
+          $ref: '#/components/responses/400'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/members/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the family member
+        example: "a1b2c3d4-0000-0000-0000-000000000001"
+
+    put:
+      tags: [members]
+      summary: Update a member's personal info
+      description: |
+        Updates personal fields only (`firstName`, `lastName`, `gender`,
+        `birthDate`, `deathDate`, `notes`).
+        Does **not** modify `parent1Id`, `parent2Id`, or spouse relations —
+        use the relationship endpoints for those.
+      operationId: updateMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemberBody'
+      responses:
+        '200':
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FamilyMember'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+    delete:
+      tags: [members]
+      summary: Delete a member
+      description: |
+        Deletes the member and performs cascading cleanup:
+
+        1. Children whose `parent1Id` pointed to this member have their
+           `parent1Id` replaced by the deleted member's own `parent1Id`
+           (grandparent promotion, or `null` if root).
+        2. Any child whose `parent2Id` pointed to this member has that slot
+           cleared to `null`.
+        3. All spouse relations involving this member are removed.
+        4. If this member was the root, the first remaining member
+           (by `created_at ASC`) becomes the new root.
+
+        The entire operation runs in a single transaction.
+      operationId: deleteMember
+      responses:
+        '200':
+          description: Deletion result with updated root
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DeleteMemberData'
+              example:
+                success: true
+                data:
+                  deletedId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  newRootMemberId: "a1b2c3d4-0000-0000-0000-000000000002"
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Per-member relationship queries
+  # ==========================================================================
+
+  /api/members/{id}/spouses:
+    get:
+      tags: [member-relations]
+      summary: Get all spouse relations for a member
+      description: |
+        Returns all spouse relations involving the given member. Each entry
+        includes the relation `id` (use this for divorce and remove-spouse),
+        the other member's ID as `spouseId`, and the current `status`.
+      operationId: getMemberSpouses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the member
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+      responses:
+        '200':
+          description: Spouse relations for the member
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MemberSpousesData'
+              example:
+                success: true
+                data:
+                  memberId: "a1b2c3d4-0000-0000-0000-000000000003"
+                  spouses:
+                    - relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+                      spouseId: "a1b2c3d4-0000-0000-0000-000000000005"
+                      status: divorced
+                    - relationId: "d4e5f6a7-0000-0000-0000-000000000088"
+                      spouseId: "a1b2c3d4-0000-0000-0000-000000000006"
+                      status: current
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/members/{id}/parents:
+    get:
+      tags: [member-relations]
+      summary: Get all parents of a member
+      description: |
+        Returns 0, 1, or 2 parent members of the given member as full
+        `FamilyMember` objects. The order matches `parent1Id` first,
+        then `parent2Id`.
+      operationId: getMemberParents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the member
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+      responses:
+        '200':
+          description: Parents of the member
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MemberParentsData'
+              example:
+                success: true
+                data:
+                  memberId: "a1b2c3d4-0000-0000-0000-000000000003"
+                  parents:
+                    - id: "a1b2c3d4-0000-0000-0000-000000000001"
+                      firstName: Robert
+                      lastName: Smith
+                      gender: male
+                      birthDate: "1935-03-12"
+                      deathDate: "1995-11-04"
+                      parent1Id: null
+                      parent2Id: null
+                      notes: "Family patriarch"
+                      spouses:
+                        - id: "c3d4e5f6-0000-0000-0000-000000000099"
+                          spouseId: "a1b2c3d4-0000-0000-0000-000000000002"
+                          status: current
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/members/{id}/children:
+    get:
+      tags: [member-relations]
+      summary: Get all children of a member
+      description: |
+        Returns all members who list this member as `parent1Id` or `parent2Id`,
+        as full `FamilyMember` objects.
+      operationId: getMemberChildren
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the member
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+      responses:
+        '200':
+          description: Children of the member
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MemberChildrenData'
+              example:
+                success: true
+                data:
+                  memberId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  children:
+                    - id: "a1b2c3d4-0000-0000-0000-000000000003"
+                      firstName: James
+                      lastName: Smith
+                      gender: male
+                      birthDate: "1962-05-18"
+                      deathDate: null
+                      parent1Id: "a1b2c3d4-0000-0000-0000-000000000001"
+                      parent2Id: "a1b2c3d4-0000-0000-0000-000000000002"
+                      notes: null
+                      spouses: []
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Relationships
+  # ==========================================================================
+
+  /api/relationships/link-child:
+    post:
+      tags: [relationships]
+      summary: Link a child to a parent (up to two parents per child)
+      description: |
+        Sets the child's parent slot(s). The endpoint is designed from the
+        **parent's perspective** — supply your own ID as `parentId` and
+        the child's ID as `childId`.
+
+        **Parent slot assignment:**
+        - Child has **0 parents** → `parentId` fills `parent1Id`. Optionally
+          supply `parent2Id` to fill both in the same request.
+        - Child has **1 parent** → call again (without `parent2Id`);
+          `parentId` fills the empty `parent2Id` slot.
+        - Child has **2 parents** → request is rejected (400).
+
+        **Validation — applied to both `parentId` and `parent2Id`:**
+        - Must exist as a member
+        - Must not equal `childId`
+        - Must not already be a parent of the child
+        - Must not be a descendant of the child (cycle prevention)
+        - Must not already be a spouse of the child
+
+        **Additional checks when `parent2Id` is supplied:**
+        - `parent2Id != parentId`
+        - `parentId` and `parent2Id` must not be in an ancestor/descendant
+          relationship with each other
+
+        If `childId` was the current root, the topmost ancestor of `parentId`
+        (following `parent1Id` chain) becomes the new root.
+      operationId: linkChild
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkChildBody'
+            examples:
+              single_parent:
+                summary: Link one parent
+                value:
+                  parentId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  childId: "a1b2c3d4-0000-0000-0000-000000000003"
+              both_parents:
+                summary: Link both parents at once (child must have 0 parents)
+                value:
+                  parentId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  childId: "a1b2c3d4-0000-0000-0000-000000000003"
+                  parent2Id: "a1b2c3d4-0000-0000-0000-000000000002"
+      responses:
+        '200':
+          description: Child linked successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LinkChildData'
+              examples:
+                single_parent:
+                  summary: One parent linked
+                  value:
+                    success: true
+                    data:
+                      childId: "a1b2c3d4-0000-0000-0000-000000000003"
+                      parentId: "a1b2c3d4-0000-0000-0000-000000000001"
+                      newRootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+                both_parents:
+                  summary: Both parents linked
+                  value:
+                    success: true
+                    data:
+                      childId: "a1b2c3d4-0000-0000-0000-000000000003"
+                      parentId: "a1b2c3d4-0000-0000-0000-000000000001"
+                      parent2Id: "a1b2c3d4-0000-0000-0000-000000000002"
+                      newRootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/relationships/link-spouse:
+    post:
+      tags: [relationships]
+      summary: Link two members as current spouses
+      description: |
+        Creates a single `spouse_relations` row with `status='current'`.
+        The relation `id` is returned and should be stored by the client
+        for use with the divorce and remove-spouse endpoints.
+
+        **Validation rules (all must pass):**
+        - Both members must exist
+        - `memberId != spouseId`
+        - Must not already be spouses (current or divorced)
+        - Must not be siblings (share at least one parent)
+        - Must not be in an ancestor/descendant relationship
+        - Neither member may already have a **living** current spouse
+      operationId: linkSpouse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LinkSpouseBody'
+            example:
+              memberId: "a1b2c3d4-0000-0000-0000-000000000001"
+              spouseId: "a1b2c3d4-0000-0000-0000-000000000002"
+      responses:
+        '200':
+          description: Spouse link created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LinkSpouseData'
+              example:
+                success: true
+                data:
+                  id: "c3d4e5f6-0000-0000-0000-000000000099"
+                  memberId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  spouseId: "a1b2c3d4-0000-0000-0000-000000000002"
+                  status: current
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/relationships/parent/{childId}:
+    delete:
+      tags: [relationships]
+      summary: Remove all parents from a child
+      description: |
+        Clears **both** `parent1Id` and `parent2Id` on the child, making
+        them fully orphaned. The root member setting is not affected.
+      operationId: unlinkParent
+      parameters:
+        - name: childId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the child member to orphan
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+      responses:
+        '200':
+          description: Parent links cleared
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UnlinkParentData'
+              example:
+                success: true
+                data:
+                  childId: "a1b2c3d4-0000-0000-0000-000000000003"
+                  previousParent1Id: "a1b2c3d4-0000-0000-0000-000000000001"
+                  previousParent2Id: "a1b2c3d4-0000-0000-0000-000000000002"
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/relationships/spouse:
+    delete:
+      tags: [relationships]
+      summary: Remove a spouse relationship entirely
+      description: |
+        Permanently deletes the spouse relation row identified by `relationId`.
+        Use this to correct a mistake. To record a divorce while keeping
+        the history, use `PUT /api/relationships/divorce` instead.
+      operationId: removeSpouse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelationIdBody'
+            example:
+              relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+      responses:
+        '200':
+          description: Spouse relation removed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RemoveSpouseData'
+              example:
+                success: true
+                data:
+                  relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+                  spouse1Id: "a1b2c3d4-0000-0000-0000-000000000001"
+                  spouse2Id: "a1b2c3d4-0000-0000-0000-000000000002"
+                  removed: true
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/relationships/divorce:
+    put:
+      tags: [relationships]
+      summary: Mark a spouse relationship as divorced
+      description: |
+        Updates the `spouse_relations` row identified by `relationId` to
+        `status='divorced'`. The record is preserved for history.
+        To undo a divorce, use `PUT /api/relationships/reconcile`.
+        To delete the record entirely, use `DELETE /api/relationships/spouse`.
+      operationId: divorceSpouse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelationIdBody'
+            example:
+              relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+      responses:
+        '200':
+          description: Relationship marked as divorced
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DivorceData'
+              example:
+                success: true
+                data:
+                  relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+                  spouse1Id: "a1b2c3d4-0000-0000-0000-000000000003"
+                  spouse2Id: "a1b2c3d4-0000-0000-0000-000000000005"
+                  status: divorced
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/relationships/reconcile:
+    put:
+      tags: [relationships]
+      summary: Undo a divorce (reconcile a couple)
+      description: |
+        Restores a `divorced` spouse relation back to `current`.
+
+        **Business rules — both must pass:**
+        1. The relation must exist and have `status='divorced'`.
+        2. Neither `spouse1Id` nor `spouse2Id` may already have a **different**
+           `current` spouse relation. If either is currently married to someone
+           else, the request is rejected with 400 — divorce or remove that
+           relation first.
+
+        This is the inverse of `PUT /api/relationships/divorce`.
+      operationId: reconcileSpouse
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RelationIdBody'
+            example:
+              relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+      responses:
+        '200':
+          description: Relationship restored to current
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReconcileData'
+              example:
+                success: true
+                data:
+                  relationId: "c3d4e5f6-0000-0000-0000-000000000099"
+                  spouse1Id: "a1b2c3d4-0000-0000-0000-000000000003"
+                  spouse2Id: "a1b2c3d4-0000-0000-0000-000000000005"
+                  status: current
+        '400':
+          description: One of the spouses already has an active current relation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                error: "Cannot reconcile: spouse1 already has an active current spouse relation. Divorce or remove that relation first."
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Tree settings
+  # ==========================================================================
+
+  /api/tree/root:
+    get:
+      tags: [tree]
+      summary: Get the root member
+      description: Returns the ID of the member at the top of the displayed tree.
+      operationId: getRoot
+      responses:
+        '200':
+          description: Current root member ID
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RootData'
+              example:
+                success: true
+                data:
+                  rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+        '500':
+          $ref: '#/components/responses/500'
+
+    put:
+      tags: [tree]
+      summary: Set the root member
+      description: Explicitly designates which member is shown at the top of the tree.
+      operationId: setRoot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetRootBody'
+            example:
+              rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+      responses:
+        '200':
+          description: Root updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RootData'
+              example:
+                success: true
+                data:
+                  rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Eligibility
+  # ==========================================================================
+
+  /api/eligibility/spouses/{memberId}:
+    get:
+      tags: [eligibility]
+      summary: Members eligible to marry a given member
+      description: |
+        Returns all members that can be linked as a spouse to `memberId`.
+
+        **Excluded from results:**
+        - Self
+        - Existing spouses (current or divorced)
+        - Siblings (share at least one parent — correctly handles half-siblings)
+        - Ancestors (BFS upward through both parent slots)
+        - Descendants (BFS downward through both parent slots)
+        - Members who already have a living current spouse
+
+        If `memberId` itself already has a living current spouse, returns `[]`.
+      operationId: eligibleSpouses
+      parameters:
+        - name: memberId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the member looking for a spouse
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+      responses:
+        '200':
+          description: Eligible members
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EligibleMembersData'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/eligibility/parents/{childId}:
+    get:
+      tags: [eligibility]
+      summary: Members eligible to become a parent of a given child
+      description: |
+        Returns all members that can be set as a parent of `childId`.
+
+        **Precondition:** if `childId` already has **two** parents, returns `[]`.
+
+        **Excluded from results:**
+        - Self
+        - Members already assigned as a parent of this child
+        - Existing spouses of the child (current or divorced)
+        - Descendants of the child (would create a cycle)
+      operationId: eligibleParents
+      parameters:
+        - name: childId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the child seeking a parent
+          example: "a1b2c3d4-0000-0000-0000-000000000007"
+      responses:
+        '200':
+          description: Eligible members
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EligibleMembersData'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/eligibility/children/{parentId}:
+    get:
+      tags: [eligibility]
+      summary: Members eligible to become a child of a given parent
+      description: |
+        Returns all members that can be linked as a child to `parentId`.
+
+        **Excluded from results:**
+        - Self
+        - Members who already have **two** parents (no free slot)
+        - Members where `parentId` is already one of their parents
+        - Existing spouses of the parent (current or divorced)
+        - Ancestors of the parent (would create a cycle)
+      operationId: eligibleChildren
+      parameters:
+        - name: parentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the parent seeking to link a child
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+      responses:
+        '200':
+          description: Eligible members
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EligibleMembersData'
+        '404':
+          $ref: '#/components/responses/404'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Import / Export / Clear
+  # ==========================================================================
+
+  /api/export:
+    get:
+      tags: [data]
+      summary: Export the full tree as JSON
+      description: |
+        Returns all members (with `parent1Id`, `parent2Id`, and spouse arrays
+        including relation IDs) and the current root member ID.
+        The output is compatible with `POST /api/import`.
+      operationId: exportData
+      responses:
+        '200':
+          description: Full tree export
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MembersListData'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/import:
+    post:
+      tags: [data]
+      summary: Replace all data from a JSON snapshot
+      description: |
+        **Destructive** — deletes all existing members, relations, and settings
+        before inserting the supplied data. Runs in a single transaction.
+
+        **Validation:**
+        - `members` must be a non-empty array
+        - Each member must have valid `id`, `firstName`, `lastName`, `gender`
+        - All `parent1Id` and `parent2Id` references must point to members in
+          the array (or be `null`)
+        - `parent2Id` requires `parent1Id` to also be set and must differ from it
+        - All `spouseId` references must point to members in the array
+        - Spouse pairs are automatically deduplicated — each canonical pair is
+          inserted once regardless of which side listed the other
+
+        Accepts both camelCase (`parent1Id`) and snake_case (`parent1_id`) keys
+        for compatibility with exported data.
+      operationId: importData
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportBody'
+      responses:
+        '200':
+          description: Import successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImportData'
+              example:
+                success: true
+                data:
+                  imported: 9
+        '400':
+          $ref: '#/components/responses/400'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/clear:
+    delete:
+      tags: [data]
+      summary: Delete all data and reset root to null
+      description: |
+        **Destructive** — removes all family members, spouse relations,
+        and resets the root member ID to `null`. Runs in a single transaction.
+      operationId: clearData
+      responses:
+        '200':
+          description: All data cleared
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ClearData'
+              example:
+                success: true
+                data:
+                  cleared: true
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Health check
+  # ==========================================================================
+
+  /health:
+    get:
+      tags: [data]
+      summary: Health check
+      description: 'Returns `{ "status": "ok" }` when the server is running.'
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
