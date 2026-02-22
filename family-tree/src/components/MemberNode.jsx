@@ -88,7 +88,7 @@ export default function MemberNode({ data, id }) {
 
   const bg     = genderColor(member.gender);
   const border = genderBorder(member.gender);
-  const isDead = !!member.deathDate;
+  const isDead = !!member.isDeceased;
 
   return (
     <div

@@ -110,6 +110,13 @@ components:
           format: date
           nullable: true
           example: "1995-11-04"
+        isDeceased:
+          type: boolean
+          default: false
+          description: >
+            Explicit deceased flag. Automatically set to `true` when `deathDate`
+            is provided. Can also be set independently (e.g. when exact date is unknown).
+          example: true
         parent1Id:
           type: string
           format: uuid
@@ -157,6 +164,13 @@ components:
           format: date
           nullable: true
           example: "1995-11-04"
+        isDeceased:
+          type: boolean
+          default: false
+          description: >
+            Explicit deceased flag. Automatically set to `true` when `deathDate`
+            is provided. Can also be set independently when exact date is unknown.
+          example: false
         notes:
           type: string
           nullable: true
@@ -642,7 +656,7 @@ paths:
       summary: Update a member's personal info
       description: |
         Updates personal fields only (`firstName`, `lastName`, `gender`,
-        `birthDate`, `deathDate`, `notes`).
+        `birthDate`, `deathDate`, `isDeceased`, `notes`).
         Does **not** modify `parent1Id`, `parent2Id`, or spouse relations —
         use the relationship endpoints for those.
       operationId: updateMember
