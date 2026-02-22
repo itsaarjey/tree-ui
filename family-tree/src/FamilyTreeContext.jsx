@@ -45,6 +45,17 @@ export function FamilyTreeProvider({ children }) {
     setContextMenu(null);
   }, []);
 
+  // Selected member (ego) for point-of-view layout
+  const [selectedMemberId, setSelectedMemberId] = useState(null);
+
+  const selectMember = useCallback((id) => {
+    setSelectedMemberId((prev) => (prev === id ? null : id)); // toggle off if same
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedMemberId(null);
+  }, []);
+
   const value = {
     members,
     rootMemberId,
@@ -57,6 +68,9 @@ export function FamilyTreeProvider({ children }) {
     contextMenu,
     openContextMenu,
     closeContextMenu,
+    selectedMemberId,
+    selectMember,
+    clearSelection,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

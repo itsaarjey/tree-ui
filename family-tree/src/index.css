@@ -25,3 +25,23 @@ body {
 .react-flow__pane.dragging {
   cursor: grabbing;
 }
+
+/**
+ * Smooth node position transitions when the layout changes.
+ * Applied globally (both ego and full-tree) — but blocked on the very
+ * first render via JS by not adding the class until after load.
+ * The transition is on the React Flow node wrapper's transform property.
+ */
+.react-flow__node {
+  transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Don't animate nodes while dragging — feels unnatural */
+.react-flow__node.dragging {
+  transition: none !important;
+}
+
+/* Suppress transitions on initial page load (before .layout-ready is set) */
+.layout-initial .react-flow__node {
+  transition: none !important;
+}
