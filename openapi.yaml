@@ -28,6 +28,12 @@ servers:
   - url: http://localhost:8000
     description: Local development server
 
+# ---------------------------------------------------------------------------
+# Security — Auth0 Bearer JWT (applied globally; /health is the only exception)
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
 tags:
   - name: members
     description: Create, read, update, and delete family members
@@ -471,8 +477,31 @@ components:
           type: boolean
           example: true
 
+  # ---- Security schemes ----
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Auth0 access token. Obtain a token from your Auth0 tenant and include
+        it in every request as:
+        ```
+        Authorization: Bearer <token>
+        ```
+
   # ---- Reusable responses ----
   responses:
+    401:
+      description: Missing or invalid Bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error: "Token validation failed: Signature has expired."
+
     400:
       description: Validation error
       content:
@@ -552,6 +581,8 @@ paths:
                         - id: "c3d4e5f6-0000-0000-0000-000000000099"
                           spouseId: "a1b2c3d4-0000-0000-0000-000000000002"
                           status: current
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -590,6 +621,8 @@ paths:
                         $ref: '#/components/schemas/FamilyMember'
         '400':
           $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -635,6 +668,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -674,6 +709,8 @@ paths:
                   newRootMemberId: "a1b2c3d4-0000-0000-0000-000000000002"
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -724,6 +761,8 @@ paths:
                       status: current
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -777,6 +816,8 @@ paths:
                           status: current
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -826,6 +867,8 @@ paths:
                       spouses: []
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -916,6 +959,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -968,6 +1013,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1010,6 +1057,8 @@ paths:
           $ref: '#/components/responses/400'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1051,6 +1100,8 @@ paths:
                   removed: true
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1093,6 +1144,8 @@ paths:
                   status: divorced
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1150,6 +1203,8 @@ paths:
                 error: "Cannot reconcile: spouse1 already has an active current spouse relation. Divorce or remove that relation first."
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1179,6 +1234,8 @@ paths:
                 success: true
                 data:
                   rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1213,6 +1270,8 @@ paths:
                   rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1260,6 +1319,8 @@ paths:
                         $ref: '#/components/schemas/EligibleMembersData'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1301,6 +1362,8 @@ paths:
                         $ref: '#/components/schemas/EligibleMembersData'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1341,6 +1404,8 @@ paths:
                         $ref: '#/components/schemas/EligibleMembersData'
         '404':
           $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1369,6 +1434,8 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/MembersListData'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1417,6 +1484,8 @@ paths:
                   imported: 9
         '400':
           $ref: '#/components/responses/400'
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1444,6 +1513,8 @@ paths:
                 success: true
                 data:
                   cleared: true
+        '401':
+          $ref: '#/components/responses/401'
         '500':
           $ref: '#/components/responses/500'
 
@@ -1457,6 +1528,7 @@ paths:
       summary: Health check
       description: 'Returns `{ "status": "ok" }` when the server is running.'
       operationId: healthCheck
+      security: []   # public — no auth required
       responses:
         '200':
           description: Server is healthy

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useAuth0 } from '@auth0/auth0-react';
 import { FamilyTreeProvider, useFamilyTree } from './FamilyTreeContext';
 import Toolbar from './components/Toolbar';
 import EmptyState from './components/EmptyState';
@@ -6,6 +7,7 @@ import FamilyTreeCanvas from './components/FamilyTreeCanvas';
 import ModalRenderer from './components/ModalRenderer';
 import ContextMenu from './components/ContextMenu';
 import Legend from './components/Legend';
+import { setTokenGetter } from './api';
 
 function AppInner() {
   const { members, loading, error, refresh } = useFamilyTree();
@@ -45,6 +47,40 @@ function AppInner() {
 }
 
 export default function App() {
+  const { isLoading, isAuthenticated, loginWithRedirect, getAccessTokenSilently } = useAuth0();
+  const path = window.location.pathname;
+
+  // /logout is a static page — Auth0 redirects here after logout completes.
+  if (path === '/logout') {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#6b7280', fontFamily: 'Inter, system-ui, sans-serif' }}>
+        You have been signed out.
+      </div>
+    );
+  }
+
+  // Auth0Provider processes the ?code= exchange during isLoading.
+  // Show a spinner for both the initial load AND the /callback redirect.
+  if (isLoading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#6b7280', fontFamily: 'Inter, system-ui, sans-serif' }}>
+        {path === '/callback' ? 'Signing in…' : 'Loading…'}
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    loginWithRedirect();
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#6b7280', fontFamily: 'Inter, system-ui, sans-serif' }}>
+        Redirecting to login…
+      </div>
+    );
+  }
+
+  // Wire the Auth0 token getter into the API layer
+  setTokenGetter(getAccessTokenSilently);
+
   return (
     <FamilyTreeProvider>
       <AppInner />
