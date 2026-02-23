@@ -1,8 +1,14 @@
+import { useAuth0 } from '@auth0/auth0-react';
 import { useFamilyTree } from '../FamilyTreeContext';
 import * as api from '../api';
 
 export default function Toolbar() {
   const { openModal, refresh, members } = useFamilyTree();
+  const { user, logout } = useAuth0();
+
+  const handleLogout = () => {
+    logout({ logoutParams: { returnTo: import.meta.env.VITE_AUTH0_LOGOUT_URL } });
+  };
 
   const handleExport = async () => {
     try {
@@ -75,6 +81,23 @@ export default function Toolbar() {
       </Btn>
       <Btn onClick={handleClear} color="#dc2626" disabled={members.length === 0}>
         🗑️ Clear All
+      </Btn>
+
+      <div style={{ width: 1, background: '#374151', alignSelf: 'stretch', margin: '0 4px' }} />
+
+      {user?.picture && (
+        <img
+          src={user.picture}
+          alt={user.name}
+          title={user.email}
+          style={{ width: 28, height: 28, borderRadius: '50%', border: '2px solid #4b5563' }}
+        />
+      )}
+      <span style={{ color: '#d1d5db', fontSize: 13, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={user?.email}>
+        {user?.name ?? user?.email}
+      </span>
+      <Btn onClick={handleLogout} color="#374151">
+        Sign out
       </Btn>
     </div>
   );

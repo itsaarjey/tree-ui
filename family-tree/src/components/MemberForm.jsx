@@ -1,15 +1,5 @@
 import { useState } from 'react';
 
-const FIELD = (label, key, type = 'text', required = false) => ({ label, key, type, required });
-
-const FIELDS = [
-  FIELD('First Name', 'firstName', 'text', true),
-  FIELD('Last Name', 'lastName', 'text', true),
-  FIELD('Birth Date', 'birthDate', 'date'),
-  FIELD('Death Date', 'deathDate', 'date'),
-  FIELD('Notes', 'notes', 'textarea'),
-];
-
 const GENDER_OPTIONS = [
   { value: 'male', label: '♂ Male' },
   { value: 'female', label: '♀ Female' },
@@ -18,22 +8,38 @@ const GENDER_OPTIONS = [
 
 export default function MemberForm({ initial = {}, onSubmit, submitLabel = 'Save', loading }) {
   const [form, setForm] = useState({
-    firstName: initial.firstName || '',
-    lastName: initial.lastName || '',
-    gender: initial.gender || 'male',
-    birthDate: initial.birthDate || '',
-    deathDate: initial.deathDate || '',
-    notes: initial.notes || '',
+    firstName:   initial.firstName   || '',
+    lastName:    initial.lastName    || '',
+    gender:      initial.gender      || 'male',
+    birthDate:   initial.birthDate   || '',
+    deathDate:   initial.deathDate   || '',
+    isDeceased:  initial.isDeceased  ?? false,
+    notes:       initial.notes       || '',
   });
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+
+  // Typing a death date automatically marks the member as passed away.
+  // Clearing the date does NOT uncheck — user controls that explicitly.
+  const handleDeathDate = (e) => {
+    const val = e.target.value;
+    setForm((f) => ({
+      ...f,
+      deathDate: val,
+      isDeceased: val ? true : f.isDeceased,
+    }));
+  };
+
+  const handleDeceased = (e) => {
+    setForm((f) => ({ ...f, isDeceased: e.target.checked }));
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
     const payload = { ...form };
     if (!payload.birthDate) payload.birthDate = null;
     if (!payload.deathDate) payload.deathDate = null;
-    if (!payload.notes) payload.notes = null;
+    if (!payload.notes)     payload.notes     = null;
     onSubmit(payload);
   };
 
@@ -50,7 +56,12 @@ export default function MemberForm({ initial = {}, onSubmit, submitLabel = 'Save
   return (
     <form onSubmit={handleSubmit}>
       <div style={{ display: 'grid', gap: 14 }}>
-        {FIELDS.slice(0, 2).map(({ label, key, required }) => (
+
+        {/* First Name / Last Name */}
+        {[
+          { label: 'First Name', key: 'firstName', required: true },
+          { label: 'Last Name',  key: 'lastName',  required: true },
+        ].map(({ label, key, required }) => (
           <label key={key} style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
             {label}{required && ' *'}
             <input
@@ -63,6 +74,7 @@ export default function MemberForm({ initial = {}, onSubmit, submitLabel = 'Save
           </label>
         ))}
 
+        {/* Gender */}
         <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
           Gender *
           <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
@@ -81,15 +93,37 @@ export default function MemberForm({ initial = {}, onSubmit, submitLabel = 'Save
           </div>
         </label>
 
+        {/* Birth Date / Death Date */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          {FIELDS.slice(2, 4).map(({ label, key }) => (
-            <label key={key} style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
-              {label}
-              <input type="date" value={form[key]} onChange={set(key)} style={inputStyle} />
-            </label>
-          ))}
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
+            Birth Date
+            <input type="date" value={form.birthDate} onChange={set('birthDate')} style={inputStyle} />
+          </label>
+          <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
+            Date of Passing
+            <input type="date" value={form.deathDate} onChange={handleDeathDate} style={inputStyle} />
+          </label>
         </div>
 
+        {/* Passed away checkbox */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={form.isDeceased}
+            onChange={handleDeceased}
+            style={{ width: 16, height: 16, cursor: 'pointer', accentColor: '#6b7280' }}
+          />
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>
+            Passed away
+          </span>
+          {form.isDeceased && !form.deathDate && (
+            <span style={{ fontSize: 11, color: '#9ca3af', fontStyle: 'italic' }}>
+              (date unknown)
+            </span>
+          )}
+        </label>
+
+        {/* Notes */}
         <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#374151' }}>
           Notes
           <textarea
