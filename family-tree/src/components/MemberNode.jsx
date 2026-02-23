@@ -20,9 +20,11 @@ export default function MemberNode({ data, id }) {
   const {
     openContextMenu, openModal, refresh, closeContextMenu,
     selectedMemberId, selectMember,
+    selfMemberId, setSelfMember,
   } = useFamilyTree();
 
-  const isEgo = id === selectedMemberId;
+  const isEgo  = id === selectedMemberId;
+  const isSelf = id === selfMemberId;
   const hasCurrentSpouse = (member.spouses || []).some((s) => s.status === 'current');
 
   /* ── click: set this member as ego (toggle off if already selected) ── */
@@ -65,6 +67,22 @@ export default function MemberNode({ data, id }) {
           },
         },
         { separator: true },
+        isSelf
+          ? {
+              label: '🧍 Unmark as me',
+              action: async () => {
+                closeContextMenu();
+                await setSelfMember(null);
+              },
+            }
+          : {
+              label: '🧍 Mark as me',
+              action: async () => {
+                closeContextMenu();
+                await setSelfMember(member.id);
+              },
+            },
+        { separator: true },
         {
           label: '🗑️ Delete member',
           danger: true,
@@ -83,7 +101,7 @@ export default function MemberNode({ data, id }) {
 
       openContextMenu(e.clientX, e.clientY, items);
     },
-    [member, hasCurrentSpouse, openContextMenu, openModal, refresh, closeContextMenu]
+    [member, hasCurrentSpouse, isSelf, openContextMenu, openModal, refresh, closeContextMenu, setSelfMember]
   );
 
   const bg     = genderColor(member.gender);
@@ -127,6 +145,22 @@ export default function MemberNode({ data, id }) {
           fontSize: 14, lineHeight: 1, pointerEvents: 'none',
         }}>
           👑
+        </div>
+      )}
+
+      {/* Self badge — shown when this card represents the logged-in user */}
+      {isSelf && (
+        <div
+          title="This is you"
+          style={{
+            position: 'absolute', bottom: -10, left: '50%', transform: 'translateX(-50%)',
+            background: '#6366f1', color: '#fff',
+            fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
+            padding: '1px 6px', borderRadius: 99,
+            pointerEvents: 'none', whiteSpace: 'nowrap',
+          }}
+        >
+          ME
         </div>
       )}
 

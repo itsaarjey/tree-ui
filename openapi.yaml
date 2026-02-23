@@ -1,10 +1,17 @@
 openapi: 3.1.0
 info:
   title: Family Tree Builder API
-  version: 3.0.0
+  version: 4.1.0
   description: |
     RESTful API for managing family trees — members, parent/child links,
     spouse relationships, eligibility queries, and full import/export.
+
+    **Multi-user model**
+
+    Each authenticated user automatically owns exactly one family tree
+    (auto-provisioned on first request). All data is scoped to the caller's
+    tree — users cannot access each other's data. The `GET /api/tree` endpoint
+    returns full tree metadata including `rootMemberId` and `selfMemberId`.
 
     **Dual-parent model**
 
@@ -42,11 +49,17 @@ tags:
   - name: relationships
     description: Link/unlink parent-child and spouse relationships
   - name: tree
-    description: Tree-wide root member settings
+    description: Per-user tree metadata, root member, and self member settings
   - name: eligibility
     description: Query which members are eligible for a given relationship
   - name: data
     description: Bulk import, export, and clear operations
+  - name: admin
+    description: |
+      Super-user operations across all trees. Requires a valid Auth0 JWT
+      **and** the caller's `sub` must be listed in `ADMIN_USER_IDS` (env var).
+      Returns **403 Forbidden** for authenticated non-admin callers and
+      **401 Unauthorized** for unauthenticated requests.
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -238,6 +251,16 @@ components:
           format: uuid
           example: "a1b2c3d4-0000-0000-0000-000000000001"
 
+    SetSelfBody:
+      type: object
+      required: [memberId]
+      properties:
+        memberId:
+          type: string
+          format: uuid
+          description: ID of the family member who represents the authenticated user.
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+
     ImportBody:
       type: object
       required: [members]
@@ -252,6 +275,12 @@ components:
           format: uuid
           nullable: true
           example: "a1b2c3d4-0000-0000-0000-000000000001"
+        selfMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Optional. ID of the member representing the authenticated user. Preserved across imports.
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
 
     # ---- Response envelopes ----
 
@@ -290,6 +319,11 @@ components:
           type: string
           format: uuid
           nullable: true
+        selfMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Present only in export responses. The member representing the authenticated user.
 
     DeleteMemberData:
       type: object
@@ -457,6 +491,40 @@ components:
           enum: [current]
           example: current
 
+    TreeInfo:
+      type: object
+      required: [id, ownerId, rootMemberId, selfMemberId, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable tree identifier (auto-created on first authenticated request).
+          example: "11111111-aaaa-bbbb-cccc-000000000001"
+        ownerId:
+          type: string
+          description: Auth0 `sub` claim of the user who owns this tree.
+          example: "auth0|abc123"
+        rootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The member displayed at the top of the tree.
+          example: "a1b2c3d4-0000-0000-0000-000000000001"
+        selfMemberId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The member representing the authenticated user in their own tree.
+          example: "a1b2c3d4-0000-0000-0000-000000000003"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2025-01-01T00:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2025-06-01T12:00:00.000Z"
+
     RootData:
       type: object
       required: [rootMemberId]
@@ -491,6 +559,49 @@ components:
           type: boolean
           example: true
 
+    AdminTreeInfo:
+      type: object
+      required: [id, ownerId, rootMemberId, selfMemberId, memberCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "11111111-aaaa-bbbb-cccc-000000000001"
+        ownerId:
+          type: string
+          nullable: true
+          description: Auth0 `sub` of the tree owner. `null` when the tree has been orphaned.
+          example: "auth0|abc123"
+        rootMemberId:
+          type: string
+          format: uuid
+          nullable: true
+        selfMemberId:
+          type: string
+          format: uuid
+          nullable: true
+        memberCount:
+          type: integer
+          description: Number of family members in this tree.
+          example: 9
+        createdAt:
+          type: string
+          format: date-time
+          example: "2025-01-01T00:00:00.000Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2025-06-01T12:00:00.000Z"
+
+    SetOwnerBody:
+      type: object
+      required: [ownerId]
+      properties:
+        ownerId:
+          type: string
+          description: The Auth0 `sub` of the new owner. Must not already own another tree.
+          example: "auth0|newuser456"
+
   # ---- Security schemes ----
   securitySchemes:
     BearerAuth:
@@ -506,6 +617,16 @@ components:
 
   # ---- Reusable responses ----
   responses:
+    403:
+      description: Authenticated but not an admin
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+          example:
+            success: false
+            error: "Admin access required"
+
     401:
       description: Missing or invalid Bearer token
       content:
@@ -1226,6 +1347,41 @@ paths:
   # Tree settings
   # ==========================================================================
 
+  /api/tree:
+    get:
+      tags: [tree]
+      summary: Get tree metadata
+      description: |
+        Returns the full tree record for the authenticated user — including the
+        tree `id`, `ownerId`, `rootMemberId`, `selfMemberId`, and timestamps.
+        The tree is auto-created on first access (idempotent).
+      operationId: getTree
+      responses:
+        '200':
+          description: Tree metadata
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TreeInfo'
+              example:
+                success: true
+                data:
+                  id: "11111111-aaaa-bbbb-cccc-000000000001"
+                  ownerId: "auth0|abc123"
+                  rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+                  selfMemberId: "a1b2c3d4-0000-0000-0000-000000000003"
+                  createdAt: "2025-01-01T00:00:00.000Z"
+                  updatedAt: "2025-06-01T12:00:00.000Z"
+        '401':
+          $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
   /api/tree/root:
     get:
       tags: [tree]
@@ -1256,7 +1412,9 @@ paths:
     put:
       tags: [tree]
       summary: Set the root member
-      description: Explicitly designates which member is shown at the top of the tree.
+      description: |
+        Explicitly designates which member is shown at the top of the tree.
+        The member must belong to the authenticated user's tree.
       operationId: setRoot
       requestBody:
         required: true
@@ -1282,6 +1440,100 @@ paths:
                 success: true
                 data:
                   rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+        '404':
+          $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /api/tree/self:
+    get:
+      tags: [tree]
+      summary: Get the "self" member
+      description: |
+        Returns the full `FamilyMember` record for the member the authenticated
+        user has designated as themselves in their tree. Returns `404` if no
+        self member has been set yet.
+      operationId: getSelf
+      responses:
+        '200':
+          description: The self member
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FamilyMember'
+              example:
+                success: true
+                data:
+                  id: "a1b2c3d4-0000-0000-0000-000000000003"
+                  firstName: James
+                  lastName: Smith
+                  gender: male
+                  birthDate: "1962-05-18"
+                  deathDate: null
+                  isDeceased: false
+                  parent1Id: "a1b2c3d4-0000-0000-0000-000000000001"
+                  parent2Id: "a1b2c3d4-0000-0000-0000-000000000002"
+                  notes: null
+                  spouses: []
+        '404':
+          description: No self member has been set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                error: "No self member set"
+        '401':
+          $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
+    put:
+      tags: [tree]
+      summary: Set the "self" member
+      description: |
+        Designates which member in the tree represents the authenticated user.
+        The member must belong to the authenticated user's tree.
+        Pass `null` (or omit the field) to clear the self pointer.
+      operationId: setSelf
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetSelfBody'
+            example:
+              memberId: "a1b2c3d4-0000-0000-0000-000000000003"
+      responses:
+        '200':
+          description: Self member updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [selfMemberId]
+                        properties:
+                          selfMemberId:
+                            type: string
+                            format: uuid
+                            nullable: true
+              example:
+                success: true
+                data:
+                  selfMemberId: "a1b2c3d4-0000-0000-0000-000000000003"
         '404':
           $ref: '#/components/responses/404'
         '401':
@@ -1433,7 +1685,7 @@ paths:
       summary: Export the full tree as JSON
       description: |
         Returns all members (with `parent1Id`, `parent2Id`, and spouse arrays
-        including relation IDs) and the current root member ID.
+        including relation IDs), the current `rootMemberId`, and `selfMemberId`.
         The output is compatible with `POST /api/import`.
       operationId: exportData
       responses:
@@ -1529,6 +1781,232 @@ paths:
                   cleared: true
         '401':
           $ref: '#/components/responses/401'
+        '500':
+          $ref: '#/components/responses/500'
+
+  # ==========================================================================
+  # Admin — cross-tree operations (admin JWT required)
+  # ==========================================================================
+
+  /admin/trees:
+    get:
+      tags: [admin]
+      summary: List all trees
+      description: |
+        Returns every tree in the database with its owner, member count,
+        and root/self member pointers. Trees that have been orphaned via
+        `DELETE /admin/trees/{treeId}/owner` show `ownerId: null`.
+      operationId: adminListTrees
+      responses:
+        '200':
+          description: All trees
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [trees]
+                        properties:
+                          trees:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/AdminTreeInfo'
+              example:
+                success: true
+                data:
+                  trees:
+                    - id: "11111111-aaaa-bbbb-cccc-000000000001"
+                      ownerId: "auth0|abc123"
+                      rootMemberId: "a1b2c3d4-0000-0000-0000-000000000001"
+                      selfMemberId: "a1b2c3d4-0000-0000-0000-000000000003"
+                      memberCount: 9
+                      createdAt: "2025-01-01T00:00:00.000Z"
+                      updatedAt: "2025-06-01T12:00:00.000Z"
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /admin/trees/{treeId}/owner:
+    parameters:
+      - name: treeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the tree
+        example: "11111111-aaaa-bbbb-cccc-000000000001"
+
+    put:
+      tags: [admin]
+      summary: Transfer tree ownership
+      description: |
+        Assign the tree to a different Auth0 user. The new `ownerId` must not
+        already own another tree (each user may own at most one tree).
+      operationId: adminSetTreeOwner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetOwnerBody'
+            example:
+              ownerId: "auth0|newuser456"
+      responses:
+        '200':
+          description: Ownership transferred
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [treeId, ownerId]
+                        properties:
+                          treeId:
+                            type: string
+                            format: uuid
+                          ownerId:
+                            type: string
+              example:
+                success: true
+                data:
+                  treeId: "11111111-aaaa-bbbb-cccc-000000000001"
+                  ownerId: "auth0|newuser456"
+        '400':
+          description: New owner already owns another tree
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                error: "Owner 'auth0|newuser456' already owns another tree"
+        '404':
+          $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '500':
+          $ref: '#/components/responses/500'
+
+    delete:
+      tags: [admin]
+      summary: Remove tree owner (orphan the tree)
+      description: |
+        Detaches the tree from its current owner. The tree and all its data
+        are preserved but the tree is no longer associated with any Auth0 user.
+        An orphaned tree shows `ownerId: null` in `GET /admin/trees`.
+
+        Orphaned trees can be re-claimed via `PUT /admin/trees/{treeId}/owner`.
+
+        Returns **400** if the tree is already orphaned.
+      operationId: adminRemoveTreeOwner
+      responses:
+        '200':
+          description: Tree orphaned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [treeId, ownerId, orphaned]
+                        properties:
+                          treeId:
+                            type: string
+                            format: uuid
+                          ownerId:
+                            type: string
+                            nullable: true
+                          orphaned:
+                            type: boolean
+              example:
+                success: true
+                data:
+                  treeId: "11111111-aaaa-bbbb-cccc-000000000001"
+                  ownerId: null
+                  orphaned: true
+        '400':
+          description: Tree is already orphaned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              example:
+                success: false
+                error: "Tree is already orphaned"
+        '404':
+          $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
+        '500':
+          $ref: '#/components/responses/500'
+
+  /admin/trees/{treeId}:
+    parameters:
+      - name: treeId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+        description: UUID of the tree
+        example: "11111111-aaaa-bbbb-cccc-000000000001"
+
+    delete:
+      tags: [admin]
+      summary: Delete a tree and all its data
+      description: |
+        **Irreversible.** Permanently deletes the tree together with all its
+        family members and spouse relations.
+      operationId: adminDeleteTree
+      responses:
+        '200':
+          description: Tree deleted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [treeId, deleted]
+                        properties:
+                          treeId:
+                            type: string
+                            format: uuid
+                          deleted:
+                            type: boolean
+              example:
+                success: true
+                data:
+                  treeId: "11111111-aaaa-bbbb-cccc-000000000001"
+                  deleted: true
+        '404':
+          $ref: '#/components/responses/404'
+        '401':
+          $ref: '#/components/responses/401'
+        '403':
+          $ref: '#/components/responses/403'
         '500':
           $ref: '#/components/responses/500'
 

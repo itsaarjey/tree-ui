@@ -42,9 +42,16 @@ export const removeSpouse = (relationId) => request('DELETE', '/api/relationship
 export const divorceSpouse = (relationId) => request('PUT', '/api/relationships/divorce', { relationId });
 export const reconcileSpouse = (relationId) => request('PUT', '/api/relationships/reconcile', { relationId });
 
+// Tree metadata (includes rootMemberId + selfMemberId)
+export const getTree = () => request('GET', '/api/tree');
+
 // Tree root
 export const getRoot = () => request('GET', '/api/tree/root');
 export const setRoot = (rootMemberId) => request('PUT', '/api/tree/root', { rootMemberId });
+
+// Self member
+export const getSelf = () => request('GET', '/api/tree/self');
+export const setSelf = (memberId) => request('PUT', '/api/tree/self', { memberId });
 
 // Eligibility
 export const eligibleSpouses = (memberId) => request('GET', `/api/eligibility/spouses/${memberId}`);
